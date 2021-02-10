@@ -25,7 +25,7 @@ class REINFORCE_Agent(nn.Module):
 
         self.linear1 = nn.Linear(num_states, hidden_size)
         self.linear2 = nn.Linear(hidden_size, 1)
-        self.linear2 = nn.Linear(hidden_size, 1)
+        self.linear2_ = nn.Linear(hidden_size, 1)
         self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         
     
@@ -95,7 +95,7 @@ class REINFORCE_Agent(nn.Module):
         self.optimizer.zero_grad()
         policy_gradient = torch.stack(policy_gradient).mean() # sum()
         policy_gradient.backward()
-        utils.clip_grad_norm(self.model.parameters(), 40)
+        utils.clip_grad_norm(self.parameters(), 40)
         self.optimizer.step()
         #return rewards
 
@@ -167,23 +167,23 @@ class A2C_Agent(nn.Module):
         p_loss = 0
         v_loss = 0
         deltas = []
-    
-        for i in range(len(rewards)):
-            if i!=len(rewards)-1: 
-                deltas.append((gamma**i)*(rewards[i] + gamma*self.values[i+1].detach().cpu().numpy() - self.values[i].detach().cpu().numpy()).reshape(-1))
-            else:
-                deltas.append((gamma**i)*(rewards[i] - self.values[i].detach().cpu().numpy()).reshape(-1))
-        
-        
-        
-        
         if cv_constructor != None:
             if cv_constructor.status == 'learning':
-                deltas = cv_constructor.learn_regression(1, actions, states, deltas)
+                rewards = cv_constructor.learn_regression(1, actions, states, rewards)
                 return 0
             if cv_constructor.status == 'work':
-                deltas = cv_constructor.get_cv_correction(states, actions, deltas)
+                rewards = cv_constructor.get_cv_correction(states, actions, rewards)
+        for i in range(len(rewards)):
+            if i!=len(rewards)-1: 
+                deltas.append((gamma**i)*(rewards[i] + gamma*self.values[i+1].detach() - self.values[i].detach()).reshape(-1))
+            else:
+                deltas.append((gamma**i)*(rewards[i] - self.values[i].detach()).reshape(-1))
         
+        
+        
+        
+
+     
         for i in range(len(rewards)):
             p_loss = p_loss - self.values[i]*(Variable(torch.tensor(deltas[i], dtype = torch.float32)).cuda())
             v_loss = v_loss - (log_probs[i]*(Variable(torch.tensor(deltas[i], dtype = torch.float32))).cuda()) - (0.0001*self.entropies[i].cuda()).sum()
@@ -270,19 +270,19 @@ class Approx_net(nn.Module):
     def __init__(self, input_dim):
         super(Approx_net, self).__init__()
         self.linear1 = nn.Linear(input_dim, 128)
-        torch.nn.init.normal_(self.linear1.weight,mean = 0.0, std = 0.01)
+        torch.nn.init.normal_(self.linear1.weight,mean = 0.0, std = 0.1) #0.01
         self.relu1 = nn.ReLU()
         self.linear2 = nn.Linear(128, 128)
-        torch.nn.init.normal_(self.linear2.weight,mean = 0.0, std = 0.01)
+        torch.nn.init.normal_(self.linear2.weight,mean = 0.0, std = 0.1)
         self.relu2 = nn.ReLU()
         self.linear21 = nn.Linear(128, 128)
-        torch.nn.init.normal_(self.linear21.weight,mean = 0.0, std = 0.01)
+        torch.nn.init.normal_(self.linear21.weight,mean = 0.0, std = 0.1)
         self.relu21 = nn.ReLU()
         self.linear22 = nn.Linear(128, 128)
-        torch.nn.init.normal_(self.linear22.weight,mean = 0.0, std = 0.01)
+        torch.nn.init.normal_(self.linear22.weight,mean = 0.0, std = 0.1)
         self.relu22 = nn.ReLU()
         self.linear3 = nn.Linear(128, 1)
-        torch.nn.init.normal_(self.linear3.weight,mean = 0.0, std = 0.01)
+        torch.nn.init.normal_(self.linear3.weight,mean = 0.0, std = 1)
         
 
     def forward(self, x):
@@ -294,20 +294,24 @@ class Approx_net(nn.Module):
 
 
 class CV():
-    def __init__(self, lag, K, burn_in, burn_off, polynomial, trajectory_len, state_dim, action_dim, status,  lr = 0.001):
+    def __init__(self, lag, K, burn_in, burn_off, polynomial, trajectory_len, state_dim, action_dim, status, C_1, C_2, lr = 0.001):
         super(CV, self).__init__()
-        self.status = status
+        
         self.polynomial = polynomial
         self.K = K
         self.lag = lag
         self.burn_in = burn_in
         self.burn_off = burn_off
         self.lr = lr
-        
-        
-        self.max_trajectory_len = trajectory_len
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.max_trajectory_len = trajectory_len
+        
+
+        self.c_2 = C_2
+        self.c_1 = C_1
+        self.status = status
+
         
         self.H = np.zeros((self.max_trajectory_len, self.K))
 
@@ -417,14 +421,23 @@ class CV():
         self.archive = Deltas_shifted.reshape((-1,1))
         return  Deltas_shifted.reshape((-1,1))
     
-    def do_(self):
-        e = 2+0.712828
-        return 0
+    def clean_cv(self, status):
+        
+        self.status = status
+
+        
+        self.H = np.zeros((self.max_trajectory_len, self.K))
+
+        self.trajectory_len = 0
+        
+        self.archive = None
     
     
     
     def Loss(self, R, ref):
         # Loss for control variate
+        c_1 = self.c_1
+        c_2 = self.c_2
         cv = (R - ref)
-        L =  torch.std(R) + torch.mean(cv)
+        L =  c_1*torch.std(R) + c_2*torch.sqrt(torch.mean(torch.mul(cv,cv)))
         return L
